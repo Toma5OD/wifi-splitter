@@ -4,7 +4,7 @@ Share a Mac's Cloudflare WARP-protected internet connection to an iPhone over US
 
 ## The problem
 
-Some WiFi networks (hotels, ships, venues) allow one active device at a time. Connecting an iPhone directly marks it as inactive and blocks real traffic. Running Cloudflare WARP on the Mac protects and unblocks internet access, but macOS Internet Sharing NATs iPhone traffic directly to the network, bypassing WARP entirely — so the network still sees a second device.
+Some WiFi networks (hotels, ships, venues) allow one active device at a time. Connecting an iPhone directly marks it as inactive and blocks real traffic. Running Cloudflare WARP on the Mac protects and unblocks internet access, but macOS Internet Sharing sends iPhone traffic out through the Mac's normal WiFi connection, bypassing WARP entirely — so the iPhone's traffic is unprotected and the network can identify it as a second device.
 
 ## How it works
 
