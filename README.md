@@ -4,7 +4,11 @@ Share a Mac's Cloudflare WARP-protected internet connection to an iPhone over US
 
 ## The problem
 
-Some WiFi networks (hotels, ships, venues) allow one active device at a time. Connecting an iPhone directly marks it as inactive and blocks real traffic. Running Cloudflare WARP on the Mac protects and unblocks internet access, but macOS Internet Sharing sends iPhone traffic out through the Mac's normal WiFi connection, bypassing WARP entirely — so the iPhone's traffic is unprotected and the network can identify it as a second device.
+Some WiFi networks (hotels, ships, venues) restrict internet access — blocking certain sites, throttling, or limiting to one active device per plan. Cloudflare WARP on the Mac tunnels all traffic through Cloudflare, bypassing those restrictions.
+
+The problem is sharing that protected connection to an iPhone. macOS Internet Sharing does NAT the iPhone's traffic through the Mac (the network always sees only **one device** — the Mac's IP), but it sends the iPhone's traffic out through the Mac's normal WiFi connection, **bypassing WARP entirely**. That means the iPhone's traffic hits the network's content filter unencrypted and unprotected — subject to the same blocks and restrictions as if the iPhone were connected directly.
+
+This proxy fixes that: all iPhone TCP is intercepted before it leaves the Mac and routed through WARP, so everything exits as an encrypted Cloudflare tunnel regardless of which device it came from.
 
 ## How it works
 
@@ -27,7 +31,7 @@ Cloudflare → internet
 1. **Internet Sharing** (macOS built-in) gives the iPhone an IP over USB (`bridge100`, `192.168.2.2`). No WiFi needed on the iPhone.
 2. **pf rules** intercept all TCP from `bridge100` before it reaches the Internet Sharing NAT, and redirect it to a local proxy port.
 3. **tproxy.py** accepts those connections, extracts the original destination via TLS SNI inspection, and opens the upstream connection as a normal Mac process — which Cloudflare WARP tunnels automatically.
-4. The network only ever sees one device: the Mac.
+4. The network sees one device (the Mac's IP) and one type of traffic: an encrypted Cloudflare tunnel.
 
 QUIC/UDP-443 is blocked at the pf layer so apps (YouTube, etc.) fall back to TCP HTTP/2, which the proxy can handle.
 
