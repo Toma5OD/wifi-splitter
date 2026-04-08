@@ -204,6 +204,7 @@ def _relay(a, b):
 
 _total_conn   = 0   # lifetime connections proxied
 _dropped_conn = 0   # connections where destination couldn't be determined
+_verbose      = False
 
 def _handle(client):
     global _total_conn, _dropped_conn
@@ -217,18 +218,25 @@ def _handle(client):
             info = _parse_protocol_dst(client)
             if info is None:
                 _dropped_conn += 1
+                if _verbose:
+                    print(f"[!] {peer} — no destination found; dropping")
                 return
             host, port, is_connect = info
             dst = (host, port)
+            if _verbose:
+                print(f"[~] {peer} → {host}:{port}")
             if is_connect:
                 client.recv(8192)
                 client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        elif _verbose:
+            print(f"[>] {peer} → {dst[0]}:{dst[1]}")
 
         _total_conn += 1
         upstream = socket.create_connection(dst, timeout=TIMEOUT)
         _relay(client, upstream)
-    except Exception:
-        pass
+    except Exception as e:
+        if _verbose:
+            print(f"[!] {peer} → {dst}: {e}")
     finally:
         for s in (client, upstream):
             if s:
@@ -412,6 +420,14 @@ def _monitor_loop():
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
+    global _verbose
+    import argparse
+    parser = argparse.ArgumentParser(description="Transparent WARP proxy for wifi-splitter")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="log every proxied connection")
+    args = parser.parse_args()
+    _verbose = args.verbose
+
     if os.getuid() != 0:
         print("[x] Run as root:  sudo python3 tproxy.py")
         sys.exit(1)
@@ -441,6 +457,8 @@ def main():
     print("    ✓ Ship sees only one device (your Mac)")
     print()
     print(f"    Status update every {MONITOR_SECS}s — Ctrl-C to stop and restore pf")
+    if _verbose:
+        print("    Verbose mode ON — logging every connection")
     print()
 
     # Start background monitor

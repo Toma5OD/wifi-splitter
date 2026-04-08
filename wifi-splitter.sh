@@ -219,7 +219,7 @@ cmd_tproxy() {
     REAL_USER="${SUDO_USER:-$USER}"
     log "Starting transparent proxy (all TCP through WARP)..."
     # Run as root — pf and /dev/pf require it; WARP captures all system traffic
-    python3 "$TPROXY_SCRIPT"
+    python3 "$TPROXY_SCRIPT" "$@"
 }
 
 cmd_proxy() {
