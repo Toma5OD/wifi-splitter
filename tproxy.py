@@ -443,7 +443,7 @@ def main():
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((BRIDGE_IP, PROXY_PORT))
+    server.bind(("0.0.0.0", PROXY_PORT))
     server.listen(256)
 
     def _shutdown(sig, frame):
@@ -455,6 +455,8 @@ def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
+    if not _bridge_up():
+        print("[!] Warning: bridge100 is not up — run 'sudo bash wifi-splitter.sh start' first")
     print(f"[+] Proxy running — Ctrl-C to stop")
     print(f"    Options: -v (log connections)  -s (status every {MONITOR_SECS}s)  --help")
     print()
