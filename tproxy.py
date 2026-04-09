@@ -37,9 +37,12 @@ ANCHOR       = "wifi_splitter"
 MONITOR_SECS = 30
 WARP_CLI     = "/usr/local/bin/warp-cli"
 
-# Ports to intercept and proxy on PROXY_PORT_PASSTHRU, connecting upstream on the same port.
-# Port 5222: WhatsApp/XMPP messaging.  Add others here if needed.
-PASSTHRU_PORTS = [5222]
+# Ports to proxy via PROXY_PORT_PASSTHRU (connects upstream on the same original port).
+# Leave empty unless you have a specific port whose protocol includes SNI/hostname in the
+# TLS ClientHello and you need it tunnelled through WARP.
+# Port 5222 (WhatsApp XMPP) uses a custom binary protocol with no parseable hostname
+# so it cannot be proxied — leave it out and let it go through Internet Sharing's NAT.
+PASSTHRU_PORTS = []
 
 # ─── DIOCNATLOOK — get original destination from pf state ────────────────────
 #
@@ -187,12 +190,22 @@ def _parse_protocol_dst(client_sock):
 def _relay(a, b):
     a.setblocking(False)
     b.setblocking(False)
+    # Enable TCP keepalive so the OS detects dead connections without us
+    # closing idle ones (critical for WhatsApp MQTT which has ~30s keep-alive)
+    for s in (a, b):
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            pass
     socks = [a, b]
     try:
         while True:
             r, _, e = select.select(socks, [], socks, TIMEOUT)
-            if e or not r:
+            if e:
                 break
+            # Timeout (r is empty) = connection idle, keep waiting — do NOT close
+            if not r:
+                continue
             for s in r:
                 other = b if s is a else a
                 try:
