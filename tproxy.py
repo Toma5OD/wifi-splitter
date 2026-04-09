@@ -282,7 +282,6 @@ _RDR_ANCHOR_LINE    = f'rdr-anchor "{ANCHOR}"'
 _FILTER_ANCHOR_LINE = f'anchor "{ANCHOR}"'
 
 def _build_anchor_rules():
-    passthru_ports = " ".join(str(p) for p in PASSTHRU_PORTS)
     rules = (
         # Port 443/80 → PROXY_PORT (connects upstream on same port via SNI/HTTP)
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
@@ -291,15 +290,17 @@ def _build_anchor_rules():
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
         f"from {BRIDGE_NET} to any port 80 "
         f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
-        # PASSTHRU_PORTS → PROXY_PORT_PASSTHRU (connects upstream on the ORIGINAL port)
-        # This handles WhatsApp 5222 etc without forcing wrong port.
-        f"rdr pass log on {BRIDGE_IF} inet proto tcp "
-        f"from {BRIDGE_NET} to any port {{ {passthru_ports} }} "
-        f"-> {BRIDGE_IP} port {PROXY_PORT_PASSTHRU}\n"
         # Block QUIC so YouTube/apps fall back to TCP
         f"block in quick on {BRIDGE_IF} inet proto udp "
         f"from {BRIDGE_NET} to any port 443\n"
     )
+    if PASSTHRU_PORTS:
+        passthru_ports = " ".join(str(p) for p in PASSTHRU_PORTS)
+        rules += (
+            f"rdr pass log on {BRIDGE_IF} inet proto tcp "
+            f"from {BRIDGE_NET} to any port {{ {passthru_ports} }} "
+            f"-> {BRIDGE_IP} port {PROXY_PORT_PASSTHRU}\n"
+        )
     return rules
 
 _ANCHOR_RULES = _build_anchor_rules()
