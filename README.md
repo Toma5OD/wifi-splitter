@@ -1,5 +1,7 @@
 # wifi-splitter
 
+> **Status: Working** — tested on macOS 26 (Darwin 25.x), WARP connected, iPhone over USB. YouTube, WhatsApp, Instagram, Snapchat all confirmed working.
+
 Share a Mac's Cloudflare WARP-protected internet connection to an iPhone over USB — without the ship (or any captive portal) detecting a second device.
 
 ## The problem
