@@ -65,25 +65,35 @@ sudo bash wifi-splitter.sh tproxy
 
 That's it. iPhone WiFi can stay **OFF**. All traffic routes through WARP.
 
-### Other commands
+### wifi-splitter.sh commands
 
 ```bash
-sudo bash wifi-splitter.sh status   # check service + WARP state
+sudo bash wifi-splitter.sh start    # enable Internet Sharing (gives iPhone an IP)
+sudo bash wifi-splitter.sh tproxy   # start the transparent proxy
 sudo bash wifi-splitter.sh stop     # stop Internet Sharing
+sudo bash wifi-splitter.sh status   # check service + WARP state
 sudo bash wifi-splitter.sh config   # show SSID/password config
 ```
 
-### Monitoring
+### tproxy options
 
-tproxy prints a status line every 30 seconds:
+By default tproxy runs silently. Pass flags after `tproxy` to enable output:
+
+```bash
+sudo bash wifi-splitter.sh tproxy -v      # log every proxied connection
+sudo bash wifi-splitter.sh tproxy -s      # print a status line every 30s
+sudo bash wifi-splitter.sh tproxy -v -s   # both
+```
+
+| Flag | Description |
+|------|-------------|
+| `-v`, `--verbose` | Print each connection as it's proxied, e.g. `192.168.2.2:61234 → api.instagram.com:443` |
+| `-s`, `--status` | Print a summary line every 30s: WARP state, total proxied, dropped, active connections, iPhone IP |
+
+Status line example:
 ```
 [21:30:00] WARP: Status update: Connected | proxied: 847 | dropped: 12 | active: 3 | iPhone: 192.168.2.2
 ```
-
-- **proxied** — total connections successfully forwarded through WARP
-- **dropped** — connections where no destination could be determined (non-TLS/HTTP protocols; tiny fraction of traffic)
-- **active** — connections currently open
-- **iPhone** — iPhone's current IP on bridge100
 
 ## Files
 

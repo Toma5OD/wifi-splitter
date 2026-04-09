@@ -422,9 +422,15 @@ def _monitor_loop():
 def main():
     global _verbose
     import argparse
-    parser = argparse.ArgumentParser(description="Transparent WARP proxy for wifi-splitter")
+    parser = argparse.ArgumentParser(
+        description="Transparent WARP proxy for wifi-splitter",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="  Example: sudo bash wifi-splitter.sh tproxy -v -s"
+    )
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="log every proxied connection")
+    parser.add_argument("-s", "--status", action="store_true",
+                        help=f"print a status line every {MONITOR_SECS}s")
     args = parser.parse_args()
     _verbose = args.verbose
 
@@ -449,20 +455,12 @@ def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    print(f"[+] Transparent TCP proxy on {BRIDGE_IP}:{PROXY_PORT}")
-    print()
-    print("    ✓ iPhone WiFi OFF is fine — USB cable only")
-    print("    ✓ ALL TCP traffic routes through WARP automatically")
-    print("    ✓ QUIC/UDP-443 blocked → YouTube falls back to TCP")
-    print("    ✓ Ship sees only one device (your Mac)")
-    print()
-    print(f"    Status update every {MONITOR_SECS}s — Ctrl-C to stop and restore pf")
-    if _verbose:
-        print("    Verbose mode ON — logging every connection")
+    print(f"[+] Proxy running — Ctrl-C to stop")
+    print(f"    Options: -v (log connections)  -s (status every {MONITOR_SECS}s)  --help")
     print()
 
-    # Start background monitor
-    threading.Thread(target=_monitor_loop, daemon=True).start()
+    if args.status:
+        threading.Thread(target=_monitor_loop, daemon=True).start()
 
     while True:
         try:
