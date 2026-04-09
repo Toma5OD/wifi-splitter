@@ -21,7 +21,7 @@ Usage:
   sudo python3 tproxy.py             (this file — transparent TCP proxy)
 """
 
-import ctypes, socket, struct, fcntl, os, sys
+import ctypes, socket, struct, fcntl, os, sys, re
 import threading, select, signal, subprocess, time
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -99,6 +99,34 @@ def _get_original_dst(client_sock):
         if orig_ip not in ("0.0.0.0", "127.0.0.1") and orig_port > 0:
             return orig_ip, orig_port
 
+    return None
+
+# ─── pf state table fallback ─────────────────────────────────────────────────
+
+def _get_dst_from_pf_state(client_sock):
+    """
+    Parse `pfctl -s state` to find the original destination for this connection.
+    Used when SNI is not readable (e.g. Encrypted Client Hello / ECH).
+    Returns (ip, port) or None.
+    """
+    peer_ip, peer_port = client_sock.getpeername()
+    try:
+        result = subprocess.run(
+            ["pfctl", "-s", "state"],
+            capture_output=True, text=True, timeout=3
+        )
+        for line in result.stdout.splitlines():
+            if f"{peer_ip}:{peer_port}" not in line:
+                continue
+            # pf state lines for rdr show the original dst in parentheses:
+            #   tcp bridge100 192.168.2.1:9999 (orig_ip:orig_port) <- 192.168.2.2:SRC_PORT ...
+            m = re.search(r'\((\d+\.\d+\.\d+\.\d+):(\d+)\)', line)
+            if m:
+                ip, port = m.group(1), int(m.group(2))
+                if ip not in (BRIDGE_IP, "0.0.0.0", "127.0.0.1"):
+                    return ip, port
+    except Exception:
+        pass
     return None
 
 # ─── Protocol inspection fallback ────────────────────────────────────────────
@@ -235,18 +263,24 @@ def _handle(client, upstream_port=443):
         if dst is None:
             info = _parse_protocol_dst(client)
             if info is None:
-                _dropped_conn += 1
+                # SNI not readable (e.g. Encrypted Client Hello) — try pf state table
+                dst = _get_dst_from_pf_state(client)
+                if dst is None:
+                    _dropped_conn += 1
+                    if _verbose:
+                        print(f"[!] {peer} — no destination found; dropping")
+                    return
                 if _verbose:
-                    print(f"[!] {peer} — no destination found; dropping")
-                return
-            host, port, is_connect = info
-            # port=None means TLS SNI — use the upstream_port the caller determined
-            dst = (host, port if port is not None else upstream_port)
-            if _verbose:
-                print(f"[~] {peer} → {host}:{dst[1]}")
-            if is_connect:
-                client.recv(8192)
-                client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    print(f"[#] {peer} → {dst[0]}:{dst[1]} (pf state / ECH)")
+            else:
+                host, port, is_connect = info
+                # port=None means TLS SNI — use the upstream_port the caller determined
+                dst = (host, port if port is not None else upstream_port)
+                if _verbose:
+                    print(f"[~] {peer} → {host}:{dst[1]}")
+                if is_connect:
+                    client.recv(8192)
+                    client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         elif _verbose:
             print(f"[>] {peer} → {dst[0]}:{dst[1]}")
 
