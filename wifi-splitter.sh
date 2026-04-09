@@ -250,8 +250,8 @@ case "${1:-start}" in
     start)  cmd_start  ;;
     stop)   cmd_stop   ;;
     status) cmd_status ;;
-    tproxy) cmd_tproxy ;;
-    proxy)  cmd_proxy  ;;
+    tproxy) shift; cmd_tproxy "$@" ;;
+    proxy)  shift; cmd_proxy  "$@" ;;
     config) cmd_config ;;
     *)
         echo "Usage: sudo bash wifi-splitter.sh [start|stop|status|proxy|config]"
