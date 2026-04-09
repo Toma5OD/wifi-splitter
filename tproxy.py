@@ -480,20 +480,23 @@ def main():
         s.listen(256)
         return s
 
-    server          = _make_server(PROXY_PORT)           # port 443/80 → upstream same port
-    server_passthru = _make_server(PROXY_PORT_PASSTHRU)  # port 5222 etc → upstream same port
+    server = _make_server(PROXY_PORT)  # port 443/80 → upstream same port
 
     # Map: listen socket → upstream port to use
-    server_port_map = {
-        server:          443,
-        server_passthru: PASSTHRU_PORTS[0],  # primary passthru port (5222)
-    }
+    server_port_map = {server: 443}
+
+    if PASSTHRU_PORTS:
+        server_passthru = _make_server(PROXY_PORT_PASSTHRU)
+        server_port_map[server_passthru] = PASSTHRU_PORTS[0]
+    else:
+        server_passthru = None
 
     def _shutdown(sig, frame):
         print("\n[+] Shutting down...")
         _teardown_pf()
         server.close()
-        server_passthru.close()
+        if server_passthru:
+            server_passthru.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  _shutdown)
