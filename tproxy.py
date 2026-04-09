@@ -101,32 +101,73 @@ def _get_original_dst(client_sock):
 
     return None
 
-# ─── pf state table fallback ─────────────────────────────────────────────────
+# ─── Bridge sniffer: original destination cache ───────────────────────────────
+#
+# pf redirects packets AFTER the BPF tap (which tcpdump uses), so a tcpdump
+# capture on bridge100 sees SYN packets with the ORIGINAL destination before
+# any rdr translation.  We use this to route ECH / no-SNI TLS connections
+# (e.g. WhatsApp, Instagram) where we can't read the hostname from the
+# ClientHello.
+
+_pf_dst_cache: dict = {}   # (src_ip, src_port) → (orig_dst_ip, orig_dst_port)
+_pf_cache_lock = threading.Lock()
+_sniffer_proc = None
+
+_SYN_PAT = re.compile(
+    r'IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s*>\s*(\d+\.\d+\.\d+\.\d+)\.(\d+)'
+)
+
+def _start_bridge_sniffer():
+    """Start background tcpdump on bridge100 to capture pre-redirect SYN packets."""
+    global _sniffer_proc
+    try:
+        _sniffer_proc = subprocess.Popen(
+            ["tcpdump", "-ni", BRIDGE_IF, "-l",
+             f"tcp[tcpflags] == tcp-syn and src net {BRIDGE_NET}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1
+        )
+    except Exception:
+        return
+
+    def _reader():
+        for line in _sniffer_proc.stdout:
+            m = _SYN_PAT.search(line)
+            if not m:
+                continue
+            src_ip, src_port = m.group(1), int(m.group(2))
+            dst_ip, dst_port = m.group(3), int(m.group(4))
+            with _pf_cache_lock:
+                _pf_dst_cache[(src_ip, src_port)] = (dst_ip, dst_port)
+                if len(_pf_dst_cache) > 50000:
+                    del _pf_dst_cache[next(iter(_pf_dst_cache))]
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+def _stop_bridge_sniffer():
+    global _sniffer_proc
+    if _sniffer_proc:
+        try:
+            _sniffer_proc.terminate()
+        except Exception:
+            pass
+        _sniffer_proc = None
 
 def _get_dst_from_pf_state(client_sock):
     """
-    Parse `pfctl -s state` to find the original destination for this connection.
-    Used when SNI is not readable (e.g. Encrypted Client Hello / ECH).
+    Look up original destination from the bridge100 SYN capture cache.
+    Used when TLS SNI is unreadable (Encrypted Client Hello, etc.).
     Returns (ip, port) or None.
     """
     peer_ip, peer_port = client_sock.getpeername()
-    try:
-        result = subprocess.run(
-            ["pfctl", "-s", "state"],
-            capture_output=True, text=True, timeout=3
-        )
-        for line in result.stdout.splitlines():
-            if f"{peer_ip}:{peer_port}" not in line:
-                continue
-            # pf state lines for rdr show the original dst in parentheses:
-            #   tcp bridge100 192.168.2.1:9999 (orig_ip:orig_port) <- 192.168.2.2:SRC_PORT ...
-            m = re.search(r'\((\d+\.\d+\.\d+\.\d+):(\d+)\)', line)
-            if m:
-                ip, port = m.group(1), int(m.group(2))
-                if ip not in (BRIDGE_IP, "0.0.0.0", "127.0.0.1"):
-                    return ip, port
-    except Exception:
-        pass
+    # The SYN packet should have been captured before accept() returned,
+    # but give it a short grace period in case of processing lag.
+    for _ in range(5):
+        with _pf_cache_lock:
+            dst = _pf_dst_cache.get((peer_ip, peer_port))
+        if dst:
+            return dst
+        time.sleep(0.02)  # 20 ms
     return None
 
 # ─── Protocol inspection fallback ────────────────────────────────────────────
@@ -405,6 +446,7 @@ def _setup_pf():
 
 def _teardown_pf():
     global _saved_pfconf
+    _stop_bridge_sniffer()
     # Flush our anchor rules
     subprocess.run(["pfctl", "-a", ANCHOR, "-F", "all"], capture_output=True)
     # Restore original /etc/pf.conf
@@ -506,6 +548,7 @@ def main():
 
     _open_pf()
     _setup_pf()
+    _start_bridge_sniffer()  # capture SYN packets for ECH/no-SNI fallback
 
     def _make_server(port):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
