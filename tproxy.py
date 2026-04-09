@@ -29,12 +29,17 @@ import threading, select, signal, subprocess, time
 BRIDGE_IF    = "bridge100"
 BRIDGE_NET   = "192.168.2.0/24"
 BRIDGE_IP    = "192.168.2.1"   # Mac's IP on bridge100 — redirect target for pf rdr
-PROXY_PORT   = 9999
+PROXY_PORT   = 9999            # intercepts port 443
+PROXY_PORT_PASSTHRU = 9998     # intercepts other ports (5222 etc) — connects upstream on original port
 TIMEOUT      = 30
 BUFFER       = 65536
 ANCHOR       = "wifi_splitter"
 MONITOR_SECS = 30
 WARP_CLI     = "/usr/local/bin/warp-cli"
+
+# Ports to intercept and proxy on PROXY_PORT_PASSTHRU, connecting upstream on the same port.
+# Port 5222: WhatsApp/XMPP messaging.  Add others here if needed.
+PASSTHRU_PORTS = [5222]
 
 # ─── DIOCNATLOOK — get original destination from pf state ────────────────────
 #
@@ -145,11 +150,11 @@ def _parse_protocol_dst(client_sock):
     if not data:
         return None
 
-    # TLS ClientHello → SNI
+    # TLS ClientHello → SNI (port determined by caller based on which pf rule fired)
     if data[0] == 0x16:
         sni = _parse_tls_sni(data)
         if sni:
-            return sni, 443, False  # not a CONNECT — raw TLS, relay as-is
+            return sni, None, False  # port=None → use upstream_port from caller
         return None
 
     # HTTP
@@ -206,7 +211,7 @@ _total_conn   = 0   # lifetime connections proxied
 _dropped_conn = 0   # connections where destination couldn't be determined
 _verbose      = False
 
-def _handle(client):
+def _handle(client, upstream_port=443):
     global _total_conn, _dropped_conn
     peer = client.getpeername()
     upstream = None
@@ -222,9 +227,10 @@ def _handle(client):
                     print(f"[!] {peer} — no destination found; dropping")
                 return
             host, port, is_connect = info
-            dst = (host, port)
+            # port=None means TLS SNI — use the upstream_port the caller determined
+            dst = (host, port if port is not None else upstream_port)
             if _verbose:
-                print(f"[~] {peer} → {host}:{port}")
+                print(f"[~] {peer} → {host}:{dst[1]}")
             if is_connect:
                 client.recv(8192)
                 client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -262,24 +268,28 @@ _saved_pfconf = ""
 _RDR_ANCHOR_LINE    = f'rdr-anchor "{ANCHOR}"'
 _FILTER_ANCHOR_LINE = f'anchor "{ANCHOR}"'
 
-_ANCHOR_RULES = (
-    # Only intercept ports 80 and 443.
-    # DIOCNATLOOK is unsupported on macOS 26 so we can't recover the original port
-    # from the pf state table. We use TLS SNI to get the hostname and always
-    # connect to port 443 (or 80). Intercepting other ports (e.g. 5222 for
-    # WhatsApp, 5223 for APNS) would redirect them to the wrong port and break
-    # them — so we let those go through Internet Sharing's NAT directly.
-    # Those protocols are end-to-end encrypted by the app so bypassing WARP
-    # for them is acceptable.
-    f"rdr pass log on {BRIDGE_IF} inet proto tcp "
-    f"from {BRIDGE_NET} to any port 443 "
-    f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
-    f"rdr pass log on {BRIDGE_IF} inet proto tcp "
-    f"from {BRIDGE_NET} to any port 80 "
-    f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
-    f"block in quick on {BRIDGE_IF} inet proto udp "
-    f"from {BRIDGE_NET} to any port 443\n"
-)
+def _build_anchor_rules():
+    passthru_ports = " ".join(str(p) for p in PASSTHRU_PORTS)
+    rules = (
+        # Port 443/80 → PROXY_PORT (connects upstream on same port via SNI/HTTP)
+        f"rdr pass log on {BRIDGE_IF} inet proto tcp "
+        f"from {BRIDGE_NET} to any port 443 "
+        f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
+        f"rdr pass log on {BRIDGE_IF} inet proto tcp "
+        f"from {BRIDGE_NET} to any port 80 "
+        f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
+        # PASSTHRU_PORTS → PROXY_PORT_PASSTHRU (connects upstream on the ORIGINAL port)
+        # This handles WhatsApp 5222 etc without forcing wrong port.
+        f"rdr pass log on {BRIDGE_IF} inet proto tcp "
+        f"from {BRIDGE_NET} to any port {{ {passthru_ports} }} "
+        f"-> {BRIDGE_IP} port {PROXY_PORT_PASSTHRU}\n"
+        # Block QUIC so YouTube/apps fall back to TCP
+        f"block in quick on {BRIDGE_IF} inet proto udp "
+        f"from {BRIDGE_NET} to any port 443\n"
+    )
+    return rules
+
+_ANCHOR_RULES = _build_anchor_rules()
 
 def _setup_pf():
     global _saved_pfconf
@@ -371,10 +381,10 @@ def _conn_dec():
     with _conn_lock:
         _active_conn -= 1
 
-def _handle_counted(client):
+def _handle_counted(client, upstream_port=443):
     _conn_inc()
     try:
-        _handle(client)
+        _handle(client, upstream_port)
     finally:
         _conn_dec()
 
@@ -449,15 +459,27 @@ def main():
     _open_pf()
     _setup_pf()
 
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("0.0.0.0", PROXY_PORT))
-    server.listen(256)
+    def _make_server(port):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+        s.listen(256)
+        return s
+
+    server          = _make_server(PROXY_PORT)           # port 443/80 → upstream same port
+    server_passthru = _make_server(PROXY_PORT_PASSTHRU)  # port 5222 etc → upstream same port
+
+    # Map: listen socket → upstream port to use
+    server_port_map = {
+        server:          443,
+        server_passthru: PASSTHRU_PORTS[0],  # primary passthru port (5222)
+    }
 
     def _shutdown(sig, frame):
         print("\n[+] Shutting down...")
         _teardown_pf()
         server.close()
+        server_passthru.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT,  _shutdown)
@@ -472,10 +494,16 @@ def main():
     if args.status:
         threading.Thread(target=_monitor_loop, daemon=True).start()
 
+    servers = list(server_port_map.keys())
     while True:
         try:
-            client, _ = server.accept()
-            threading.Thread(target=_handle_counted, args=(client,), daemon=True).start()
+            readable, _, _ = select.select(servers, [], [], 1.0)
+            for srv in readable:
+                client, _ = srv.accept()
+                upstream_port = server_port_map[srv]
+                threading.Thread(
+                    target=_handle_counted, args=(client, upstream_port), daemon=True
+                ).start()
         except OSError:
             break
 
