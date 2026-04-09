@@ -263,11 +263,19 @@ _RDR_ANCHOR_LINE    = f'rdr-anchor "{ANCHOR}"'
 _FILTER_ANCHOR_LINE = f'anchor "{ANCHOR}"'
 
 _ANCHOR_RULES = (
-    # Redirect to BRIDGE_IP (192.168.2.1) not 127.0.0.1:
-    # macOS won't deliver a forwarded packet that pf redirects to loopback,
-    # but it will deliver one redirected to the local address on the same interface.
+    # Only intercept ports 80 and 443.
+    # DIOCNATLOOK is unsupported on macOS 26 so we can't recover the original port
+    # from the pf state table. We use TLS SNI to get the hostname and always
+    # connect to port 443 (or 80). Intercepting other ports (e.g. 5222 for
+    # WhatsApp, 5223 for APNS) would redirect them to the wrong port and break
+    # them — so we let those go through Internet Sharing's NAT directly.
+    # Those protocols are end-to-end encrypted by the app so bypassing WARP
+    # for them is acceptable.
     f"rdr pass log on {BRIDGE_IF} inet proto tcp "
-    f"from {BRIDGE_NET} to !{BRIDGE_NET} "
+    f"from {BRIDGE_NET} to any port 443 "
+    f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
+    f"rdr pass log on {BRIDGE_IF} inet proto tcp "
+    f"from {BRIDGE_NET} to any port 80 "
     f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
     f"block in quick on {BRIDGE_IF} inet proto udp "
     f"from {BRIDGE_NET} to any port 443\n"
