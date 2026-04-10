@@ -370,7 +370,9 @@ def _build_anchor_rules():
     # Empty table = no bypass (graceful fallback: !<empty> matches everything → same as any).
     rules = (
         f"table <{SNAPCHAT_CDN_TABLE}> persist {{}}\n"
-        # Translation rules first (pf ordering requirement)
+        # QUIC to Snapchat CDN: allow through (HTTP/3 for fast media delivery)
+        f"pass in quick on {BRIDGE_IF} proto udp "
+        f"from {BRIDGE_NET} to <{SNAPCHAT_CDN_TABLE}> port 443\n"
         # TCP to Snapchat CDN: skip proxy → direct via Internet Sharing NAT
         # TCP to everything else: redirect to proxy as normal
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
@@ -379,10 +381,6 @@ def _build_anchor_rules():
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
         f"from {BRIDGE_NET} to any port 80 "
         f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
-        # Filter rules after translation rules
-        # QUIC to Snapchat CDN: allow through (HTTP/3 for fast media)
-        f"pass in quick on {BRIDGE_IF} proto udp "
-        f"from {BRIDGE_NET} to <{SNAPCHAT_CDN_TABLE}> port 443\n"
         # Block QUIC for everything else so apps fall back to TCP
         f"block in quick on {BRIDGE_IF} inet proto udp "
         f"from {BRIDGE_NET} to any port 443\n"
