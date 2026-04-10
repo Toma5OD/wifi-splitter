@@ -44,15 +44,6 @@ WARP_CLI     = "/usr/local/bin/warp-cli"
 # so it cannot be proxied — leave it out and let it go through Internet Sharing's NAT.
 PASSTHRU_PORTS = []
 
-# Snapchat CDN hostnames to bypass the proxy (direct via Internet Sharing NAT).
-# Their IPs are resolved at startup and loaded into a pf table so QUIC is
-# allowed and TCP isn't redirected — faster media without touching WARP routing.
-SNAPCHAT_CDN_TABLE = "snapchat_cdn"
-SNAPCHAT_CDN_HOSTS = [
-    "bolt-gcdn.sc-cdn.net",
-    "cf-st.sc-cdn.net",
-]
-
 # ─── DIOCNATLOOK — get original destination from pf state ────────────────────
 #
 # When pf redirects a TCP packet with rdr-to, the state table records the
@@ -366,22 +357,15 @@ _RDR_ANCHOR_LINE    = f'rdr-anchor "{ANCHOR}"'
 _FILTER_ANCHOR_LINE = f'anchor "{ANCHOR}"'
 
 def _build_anchor_rules():
-    # Snapchat CDN table — populated after setup via _resolve_snapchat_cdn().
-    # Empty table = no bypass (graceful fallback: !<empty> matches everything → same as any).
     rules = (
-        f"table <{SNAPCHAT_CDN_TABLE}> persist {{}}\n"
-        # QUIC to Snapchat CDN: allow through (HTTP/3 for fast media delivery)
-        f"pass in quick on {BRIDGE_IF} proto udp "
-        f"from {BRIDGE_NET} to <{SNAPCHAT_CDN_TABLE}> port 443\n"
-        # TCP to Snapchat CDN: skip proxy → direct via Internet Sharing NAT
-        # TCP to everything else: redirect to proxy as normal
+        # Port 443/80 → PROXY_PORT (connects upstream on same port via SNI/HTTP)
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
-        f"from {BRIDGE_NET} to !<{SNAPCHAT_CDN_TABLE}> port 443 "
+        f"from {BRIDGE_NET} to any port 443 "
         f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
         f"from {BRIDGE_NET} to any port 80 "
         f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
-        # Block QUIC for everything else so apps fall back to TCP
+        # Block QUIC so YouTube/apps fall back to TCP
         f"block in quick on {BRIDGE_IF} inet proto udp "
         f"from {BRIDGE_NET} to any port 443\n"
     )
@@ -394,24 +378,7 @@ def _build_anchor_rules():
         )
     return rules
 
-def _resolve_snapchat_cdn():
-    """Resolve Snapchat CDN hostnames to IPs and load into the pf table.
-    Called after _setup_pf() so the anchor (and its table) already exist."""
-    ips = set()
-    for host in SNAPCHAT_CDN_HOSTS:
-        try:
-            for _, _, _, _, addr in socket.getaddrinfo(host, 443, socket.AF_INET):
-                ips.add(addr[0])
-        except Exception:
-            pass
-    if not ips:
-        return
-    r = subprocess.run(
-        ["pfctl", "-a", ANCHOR, "-t", SNAPCHAT_CDN_TABLE, "-T", "replace"] + sorted(ips),
-        capture_output=True
-    )
-    if r.returncode == 0:
-        print(f"[+] Snapchat CDN: {len(ips)} IPs bypass proxy (faster media)")
+_ANCHOR_RULES = _build_anchor_rules()
 
 def _setup_pf():
     global _saved_pfconf
@@ -421,7 +388,7 @@ def _setup_pf():
 
     # Load our rules into the anchor first
     r = subprocess.run(["pfctl", "-a", ANCHOR, "-f", "-"],
-                       input=_build_anchor_rules().encode(), capture_output=True)
+                       input=_ANCHOR_RULES.encode(), capture_output=True)
     if r.returncode != 0 and b"not loaded" in r.stderr:
         print("[x] Failed to load anchor rules:", r.stderr.decode())
         sys.exit(1)
@@ -581,7 +548,6 @@ def main():
 
     _open_pf()
     _setup_pf()
-    _resolve_snapchat_cdn()   # populate Snapchat CDN bypass table
     _start_bridge_sniffer()  # capture SYN packets for ECH/no-SNI fallback
 
     def _make_server(port):
