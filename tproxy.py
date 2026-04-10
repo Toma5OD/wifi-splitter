@@ -365,9 +365,9 @@ def _build_anchor_rules():
         f"rdr pass log on {BRIDGE_IF} inet proto tcp "
         f"from {BRIDGE_NET} to any port 80 "
         f"-> {BRIDGE_IP} port {PROXY_PORT}\n"
-        # Block QUIC so YouTube/apps fall back to TCP
-        f"block in quick on {BRIDGE_IF} inet proto udp "
-        f"from {BRIDGE_NET} to any port 443\n"
+        # QUIC (UDP 443) is allowed through to Internet Sharing's NAT.
+        # iPhone still appears as Mac's IP to the network; QUIC apps (Snapchat CDN,
+        # YouTube) get full speed instead of falling back to slower TCP.
     )
     if PASSTHRU_PORTS:
         passthru_ports = " ".join(str(p) for p in PASSTHRU_PORTS)
