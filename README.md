@@ -1,6 +1,6 @@
 # wifi-splitter
 
-> **Status: Working** — tested on macOS 26 (Darwin 25.x), WARP connected, iPhone over USB. YouTube, WhatsApp, Instagram, Snapchat all confirmed working.
+> **Status: Working** — tested on macOS 26 (Darwin 25.x), WARP connected, iPhone over USB. YouTube, WhatsApp, Instagram confirmed working. Snapchat media loads slowly — see [Known Limitations](#known-limitations).
 
 Share a Mac's Cloudflare WARP-protected internet connection to an iPhone over USB — without the ship (or any captive portal) detecting a second device.
 
@@ -120,6 +120,32 @@ Then reconnect WARP.
 
 **"pf rules active" but no connections proxied**  
 Run `sudo tcpdump -ni pflog0 -c 5` while loading a page on iPhone — you should see packets going to `192.168.2.1:9999`. If nothing appears, Internet Sharing may have reloaded pf and removed our anchor. Restart tproxy.
+
+## Known Limitations
+
+### Snapchat media loads slowly
+
+Snapchat images and video load noticeably slower through this proxy than when using WARP natively on the iPhone. This is a fundamental architectural constraint, not a bug.
+
+**Why YouTube is fine but Snapchat isn't:**
+
+YouTube streams a video as one long-lived TCP connection — the proxy relays a continuous byte stream with minimal overhead.
+
+Snapchat loads a story as 50–100 parallel small HTTP/2 requests, each to a CDN chunk. Every one of those requests requires its own:
+1. TCP connection accepted by the proxy
+2. TLS ClientHello parsed to extract the destination hostname (SNI)
+3. New upstream TCP connection opened through WARP
+4. Data relayed through Python's socket layer in both directions
+
+That per-connection overhead multiplied across 100 parallel chunks is what makes Snapchat feel slow.
+
+**Why it can't be fixed in the proxy:**
+
+To restructure Snapchat's many requests into fewer connections you'd need to intercept the HTTPS content — which means doing a TLS man-in-the-middle attack on your own iPhone. The iPhone would reject the connection immediately because the proxy's certificate isn't trusted by Apple. We can only forward raw bytes; we cannot read or repackage what's inside TLS.
+
+Bypassing the proxy for Snapchat CDN traffic (routing it direct through Internet Sharing's NAT, outside WARP) was tested and made things worse — the ship network interferes with unencrypted Snapchat CDN traffic.
+
+**The root cause** is that native WARP on the iPhone uses a kernel-level WireGuard tunnel optimised for throughput. This proxy is an additional userspace Python relay layered on top of WARP, and every byte passes through it.
 
 ## Notes
 
