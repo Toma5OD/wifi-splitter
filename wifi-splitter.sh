@@ -214,12 +214,35 @@ cmd_status() {
 
 cmd_tproxy() {
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    TPROXY_SCRIPT="$SCRIPT_DIR/tproxy.py"
-    [[ ! -f "$TPROXY_SCRIPT" ]] && err "tproxy.py not found next to wifi-splitter.sh"
-    REAL_USER="${SUDO_USER:-$USER}"
-    log "Starting transparent proxy (all TCP through WARP)..."
-    # Run as root — pf and /dev/pf require it; WARP captures all system traffic
-    python3 "$TPROXY_SCRIPT" "$@"
+    TPROXY_PY="$SCRIPT_DIR/tproxy.py"
+    TPROXY_GO_SRC="$SCRIPT_DIR/tproxy.go"
+    TPROXY_GO_BIN="$SCRIPT_DIR/tproxy-go"
+
+    USE_GO=false
+    ARGS=()
+    for arg in "$@"; do
+        if [[ "$arg" == "-go" ]]; then
+            USE_GO=true
+        else
+            ARGS+=("$arg")
+        fi
+    done
+
+    if $USE_GO; then
+        [[ ! -f "$TPROXY_GO_SRC" ]] && err "tproxy.go not found next to wifi-splitter.sh"
+        if [[ ! -f "$TPROXY_GO_BIN" ]] || [[ "$TPROXY_GO_SRC" -nt "$TPROXY_GO_BIN" ]]; then
+            command -v go &>/dev/null || err "Go not installed. See https://go.dev — or run without -go to use Python"
+            log "Compiling Go proxy (this is once-only)..."
+            go build -o "$TPROXY_GO_BIN" "$TPROXY_GO_SRC" || err "Build failed"
+            log "Build complete."
+        fi
+        log "Starting transparent proxy (Go)..."
+        "$TPROXY_GO_BIN" "${ARGS[@]}"
+    else
+        [[ ! -f "$TPROXY_PY" ]] && err "tproxy.py not found next to wifi-splitter.sh"
+        log "Starting transparent proxy (Python)..."
+        python3 "$TPROXY_PY" "${ARGS[@]}"
+    fi
 }
 
 cmd_proxy() {
