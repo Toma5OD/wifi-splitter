@@ -62,33 +62,48 @@ sudo bash wifi-splitter.sh start
 
 **Terminal 2** — start the transparent proxy (keep running):
 ```bash
-sudo bash wifi-splitter.sh tproxy
+sudo bash wifi-splitter.sh tproxy -go   # Go version (recommended — faster)
+# or
+sudo bash wifi-splitter.sh tproxy       # Python version (fallback)
 ```
 
 That's it. iPhone WiFi can stay **OFF**. All traffic routes through WARP.
 
+### Go version (recommended)
+
+The Go proxy uses goroutines and optimised I/O instead of Python threads. For apps that open many parallel connections (Snapchat, Instagram) the per-connection overhead is dramatically lower.
+
+**One-time setup:**
+```bash
+brew install go
+```
+
+The first run compiles the binary automatically (~5 seconds). Every run after that is instant.
+
 ### wifi-splitter.sh commands
 
 ```bash
-sudo bash wifi-splitter.sh start    # enable Internet Sharing (gives iPhone an IP)
-sudo bash wifi-splitter.sh tproxy   # start the transparent proxy
-sudo bash wifi-splitter.sh stop     # stop Internet Sharing
-sudo bash wifi-splitter.sh status   # check service + WARP state
-sudo bash wifi-splitter.sh config   # show SSID/password config
+sudo bash wifi-splitter.sh start         # enable Internet Sharing (gives iPhone an IP)
+sudo bash wifi-splitter.sh tproxy -go    # start the proxy (Go — recommended)
+sudo bash wifi-splitter.sh tproxy        # start the proxy (Python — fallback)
+sudo bash wifi-splitter.sh stop          # stop Internet Sharing
+sudo bash wifi-splitter.sh status        # check service + WARP state
+sudo bash wifi-splitter.sh config        # show SSID/password config
 ```
 
 ### tproxy options
 
-By default tproxy runs silently. Pass flags after `tproxy` to enable output:
+By default tproxy runs silently. Pass flags after `tproxy` (before or after `-go`) to enable output:
 
 ```bash
-sudo bash wifi-splitter.sh tproxy -v      # log every proxied connection
-sudo bash wifi-splitter.sh tproxy -s      # print a status line every 30s
-sudo bash wifi-splitter.sh tproxy -v -s   # both
+sudo bash wifi-splitter.sh tproxy -go -v      # log every proxied connection
+sudo bash wifi-splitter.sh tproxy -go -s      # print a status line every 30s
+sudo bash wifi-splitter.sh tproxy -go -v -s   # both
 ```
 
 | Flag | Description |
 |------|-------------|
+| `-go` | Use the Go implementation (faster, recommended) |
 | `-v`, `--verbose` | Print each connection as it's proxied, e.g. `192.168.2.2:61234 → api.instagram.com:443` |
 | `-s`, `--status` | Print a summary line every 30s: WARP state, total proxied, dropped, active connections, iPhone IP |
 
@@ -102,7 +117,8 @@ Status line example:
 | File | Purpose |
 |------|---------|
 | `wifi-splitter.sh` | Main script — start/stop Internet Sharing, launch proxy, status |
-| `tproxy.py` | Transparent TCP proxy — pf setup, TLS SNI inspection, WARP routing |
+| `tproxy.go` | Transparent TCP proxy — Go implementation (recommended, compile once with `brew install go`) |
+| `tproxy.py` | Transparent TCP proxy — Python implementation (fallback, no setup required) |
 | `proxy.py` | HTTP/HTTPS proxy (manual iPhone config) — alternative if transparent proxy is unavailable |
 
 ## Troubleshooting
