@@ -139,9 +139,14 @@ func insertAfterLast(text, prefix, newLine string) string {
 
 // ─── Bridge100 SYN sniffer ────────────────────────────────────────────────────
 //
-// tcpdump on bridge100 captures SYN packets BEFORE pf redirects them, so we
-// see the original destination IP. Used to route ECH / no-SNI TLS connections
-// (e.g. WhatsApp MQTT, Instagram) where SNI is unreadable.
+// tcpdump captures SYN packets BEFORE pf redirects them so we see the original
+// destination IP. We prefer the first member interface of bridge100 (e.g. en5,
+// the iPhone USB interface) because that's where the packet physically arrives
+// before bridging — more reliable than sniffing bridge100 itself on macOS.
+// Falls back to bridge100 if no member is found.
+//
+// Used to route ECH / no-SNI TLS connections (e.g. WhatsApp MQTT) where the
+// TLS ClientHello SNI is encrypted and unreadable.
 
 var (
 	pfDstCache sync.Map // "srcIP:srcPort" → "dstIP:dstPort"
@@ -153,31 +158,59 @@ var synPat = regexp.MustCompile(
 	`IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s*>\s*(\d+\.\d+\.\d+\.\d+)\.(\d+)`,
 )
 
+// findSniffInterface returns the first member interface of bridge100 (e.g. en5)
+// which sees iPhone traffic before bridging and before pf redirect.
+// Falls back to bridgeIF itself if bridge100 has no members or doesn't exist.
+func findSniffInterface() string {
+	out, err := exec.Command("ifconfig", bridgeIF).Output()
+	if err != nil {
+		return bridgeIF
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "member: ") {
+			parts := strings.Fields(trimmed)
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+		}
+	}
+	return bridgeIF
+}
+
 func startBridgeSniffer() {
 	snifferMu.Lock()
 	defer snifferMu.Unlock()
 	if snifferCmd != nil {
 		return
 	}
-	cmd := exec.Command("tcpdump", "-ni", bridgeIF, "-l",
+	iface := findSniffInterface()
+	fmt.Printf("[i] Bridge sniffer: tcpdump on %s\n", iface)
+	cmd := exec.Command("tcpdump", "-nni", iface, "-l",
 		"tcp[tcpflags] == tcp-syn and src net "+bridgeNet)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		fmt.Printf("[!] sniffer stdout pipe error: %v\n", err)
 		return
 	}
-	cmd.Stderr = nil
+	cmd.Stderr = os.Stderr // show tcpdump errors (permissions, bad interface, etc.)
 	if err := cmd.Start(); err != nil {
+		fmt.Printf("[!] sniffer start error: %v\n", err)
 		return
 	}
 	snifferCmd = cmd
 	go func() {
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
-			m := synPat.FindStringSubmatch(sc.Text())
+			line := sc.Text()
+			m := synPat.FindStringSubmatch(line)
 			if m == nil {
 				continue
 			}
 			pfDstCache.Store(m[1]+":"+m[2], m[3]+":"+m[4])
+			if verbose {
+				fmt.Printf("[i] sniffer cached %s:%s → %s:%s\n", m[1], m[2], m[3], m[4])
+			}
 		}
 	}()
 }

@@ -117,17 +117,39 @@ _SYN_PAT = re.compile(
     r'IP\s+(\d+\.\d+\.\d+\.\d+)\.(\d+)\s*>\s*(\d+\.\d+\.\d+\.\d+)\.(\d+)'
 )
 
+def _find_sniff_interface():
+    """
+    Return the first member interface of bridge100 (e.g. en5 — iPhone USB).
+    iPhone traffic physically arrives on the member before bridging, so
+    tcpdump there sees pre-pf, pre-redirect SYNs more reliably.
+    Falls back to BRIDGE_IF if not found.
+    """
+    try:
+        r = subprocess.run(["ifconfig", BRIDGE_IF], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("member: "):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[1]
+    except Exception:
+        pass
+    return BRIDGE_IF
+
 def _start_bridge_sniffer():
-    """Start background tcpdump on bridge100 to capture pre-redirect SYN packets."""
+    """Start background tcpdump to capture pre-redirect SYN packets for ECH/no-SNI fallback."""
     global _sniffer_proc
+    iface = _find_sniff_interface()
+    print(f"[i] Bridge sniffer: tcpdump on {iface}")
     try:
         _sniffer_proc = subprocess.Popen(
-            ["tcpdump", "-ni", BRIDGE_IF, "-l",
+            ["tcpdump", "-nni", iface, "-l",
              f"tcp[tcpflags] == tcp-syn and src net {BRIDGE_NET}"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=None,  # show tcpdump errors (permissions, bad iface)
             text=True, bufsize=1
         )
-    except Exception:
+    except Exception as e:
+        print(f"[!] sniffer start error: {e}")
         return
 
     def _reader():
@@ -141,6 +163,8 @@ def _start_bridge_sniffer():
                 _pf_dst_cache[(src_ip, src_port)] = (dst_ip, dst_port)
                 if len(_pf_dst_cache) > 50000:
                     del _pf_dst_cache[next(iter(_pf_dst_cache))]
+            if _verbose:
+                print(f"[i] sniffer cached {src_ip}:{src_port} → {dst_ip}:{dst_port}")
 
     threading.Thread(target=_reader, daemon=True).start()
 
