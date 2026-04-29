@@ -69,7 +69,7 @@ configure_nat_plist() {
     # Build the NAT plist that macOS Internet Sharing reads.
     # AirPort block sets the hotspot SSID + password.
     python3 - <<PYEOF
-import plistlib, os, sys
+import plistlib, re, subprocess
 
 path = "$NAT_PLIST"
 
@@ -81,12 +81,40 @@ except Exception:
 
 nat = data.get("NAT", {})
 
+# Look up Wi-Fi MAC (HardwareKey) and the Wi-Fi service UUID (PrimaryService).
+# macOS Internet Sharing prefers PrimaryService over PrimaryInterface.Device when
+# choosing the source. Without it, it falls back to network service order — which
+# can pick a stale Ethernet service (e.g. an unplugged USB-Ethernet adapter).
+hwkey = ""
+try:
+    out = subprocess.run(["networksetup", "-getmacaddress", "$WIFI_INTERFACE"],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"([0-9a-f]{2}(?::[0-9a-f]{2}){5})", out, re.I)
+    if m:
+        hwkey = m.group(1).lower()
+except Exception:
+    pass
+
+service_uuid = ""
+try:
+    with open("/Library/Preferences/SystemConfiguration/preferences.plist", "rb") as f:
+        prefs = plistlib.load(f)
+    for uuid, svc in prefs.get("NetworkServices", {}).items():
+        iface = svc.get("Interface", {})
+        if iface.get("DeviceName") == "$WIFI_INTERFACE" and iface.get("Hardware") == "AirPort":
+            service_uuid = uuid
+            break
+except Exception:
+    pass
+
 # Primary interface (source of internet — ship WiFi)
 nat["PrimaryInterface"] = {
     "Device":      "$WIFI_INTERFACE",
     "Enabled":     True,
-    "HardwareKey": ""
+    "HardwareKey": hwkey,
 }
+if service_uuid:
+    nat["PrimaryService"] = service_uuid
 
 # Airport (the hotspot we create)
 nat["AirPort"] = {
@@ -107,7 +135,7 @@ data["NAT"] = nat
 with open(path, "wb") as f:
     plistlib.dump(data, f)
 
-print("Plist configured OK")
+print(f"Plist configured OK (device=$WIFI_INTERFACE hwkey={hwkey or 'MISSING'} service={service_uuid or 'MISSING'})")
 PYEOF
 }
 
